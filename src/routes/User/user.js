@@ -1,3 +1,5 @@
+// /routes/User/user.js
+
 const express = require("express");
 const zod = require("zod");
 const bcrypt = require("bcrypt");
@@ -7,6 +9,7 @@ const { Employee } = require("../../Models/employeeModel");
 const { JWT_SECRET, OTP_EXPIRY } = require("../../config");
 const { generateOTP, sendOTP } = require("../../utils/otpService");
 const { authMiddleware } = require("../../Middlewares/authMw");
+const { restrictAuthenticated } = require("../../Middlewares/restrictAuthenticated");
 
 const router = express.Router();
 
@@ -38,7 +41,7 @@ const updatePasswordBody = zod.object({
     newPassword: zod.string().min(6),
 });
 
-router.post("/signup", async (req, res) => {
+router.post("/signup", restrictAuthenticated, async (req, res) => {
     const { success, error } = signUpBody.safeParse(req.body);
 
     if (!success) {
@@ -99,7 +102,7 @@ router.post("/signup", async (req, res) => {
 });
 
 // OTP Verification Route
-router.post("/verify-otp", async (req, res) => {
+router.post("/verify-otp", restrictAuthenticated, async (req, res) => {
     const { success, error } = otpBody.safeParse(req.body);
 
     if (!success) {
@@ -161,6 +164,19 @@ router.post("/signin", async (req, res) => {
     const token = jwt.sign({ userId: user._id, role: user.role }, JWT_SECRET, { expiresIn: "7d" });
     res.json({ token });
 });
+
+
+/*
+router.post("/signout", authMiddleware, (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+        const token = authHeader.split(" ")[1];
+
+        return res.status(200).json({ message: "Logged out successfully." });
+    }
+    res.status(400).json({ message: "No token provided." });
+});
+*/
 
 
 // Password Reset Route

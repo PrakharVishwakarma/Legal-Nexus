@@ -1,3 +1,5 @@
+// /init/seedEmpData.js
+
 const mongoose = require("mongoose");
 require("dotenv").config();
 const { Employee } = require("../Models/employeeModel");
