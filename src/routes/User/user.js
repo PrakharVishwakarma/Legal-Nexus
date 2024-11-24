@@ -24,23 +24,6 @@ const signUpBody = zod.object({
     employeeId: zod.string().optional(),
     password: zod.string().min(6),
 });
-
-const otpBody = zod.object({
-    phoneNumber: zod.string(),
-    otp: zod.string().length(6),
-});
-
-const signInBody = zod.object({
-    role: zod.enum(roles),
-    identifier: zod.string(),
-    password: zod.string(),
-});
-
-const updatePasswordBody = zod.object({
-    password: zod.string().min(6),
-    newPassword: zod.string().min(6),
-});
-
 router.post("/signup", restrictAuthenticated, async (req, res) => {
     const { success, error } = signUpBody.safeParse(req.body);
 
@@ -51,7 +34,6 @@ router.post("/signup", restrictAuthenticated, async (req, res) => {
     const { role, firstName, lastName, aadharNumber, phoneNumber, userId, employeeId, password } = req.body;
 
     try {
-        // Check if user already exists
         const existingUser = await User.findOne({
             $or: [{ aadharNumber }, { phoneNumber }],
         });
@@ -59,7 +41,6 @@ router.post("/signup", restrictAuthenticated, async (req, res) => {
             return res.status(400).json({ message: "User already exists" });
         }
 
-        // Employee verification for restricted roles
         if (["Judge", "Lawyer", "Police"].includes(role)) {
             const employee = await Employee.findOne({ employeeId, role, verificationStatus: "Verified" });
             if (!employee) {
@@ -67,11 +48,9 @@ router.post("/signup", restrictAuthenticated, async (req, res) => {
             }
         }
 
-        // Generate OTP and set expiry
         const otp = generateOTP();
         const otpExpiry = new Date(Date.now() + OTP_EXPIRY);
 
-        // Create new user object with hashed password and OTP
         const newUser = new User({
             role,
             firstName,
@@ -81,14 +60,12 @@ router.post("/signup", restrictAuthenticated, async (req, res) => {
             userId: role === "Civilian" ? userId : undefined,
             employeeId: ["Judge", "Lawyer", "Police"].includes(role) ? employeeId : undefined,
             hashedPassword: await bcrypt.hash(password, 10),
-            otp: await bcrypt.hash(otp, 10),  // Hash OTP before saving
+            otp: await bcrypt.hash(otp, 10),  
             otpExpiry,
         });
 
-        // Save user to the database
         await newUser.save();
 
-        // Send OTP to user's phone number
         const otpSent = await sendOTP(phoneNumber, otp);
         if (!otpSent) {
             return res.status(500).json({ message: "Failed to send OTP. Please try again." });
@@ -101,7 +78,12 @@ router.post("/signup", restrictAuthenticated, async (req, res) => {
     }
 });
 
+
 // OTP Verification Route
+const otpBody = zod.object({
+    phoneNumber: zod.string(),
+    otp: zod.string().length(6),
+});
 router.post("/verify-otp", restrictAuthenticated, async (req, res) => {
     const { success, error } = otpBody.safeParse(req.body);
 
@@ -133,7 +115,13 @@ router.post("/verify-otp", restrictAuthenticated, async (req, res) => {
     res.json({ message: "User successfully verified" });
 });
 
+
 // Login Route for All Roles
+const signInBody = zod.object({
+    role: zod.enum(roles),
+    identifier: zod.string(),
+    password: zod.string(),
+});
 router.post("/signin", async (req, res) => {
     const { success, error } = signInBody.safeParse(req.body);
 
@@ -178,8 +166,11 @@ router.post("/signout", authMiddleware, (req, res) => {
 });
 */
 
-
 // Password Reset Route
+const updatePasswordBody = zod.object({
+    password: zod.string().min(6),
+    newPassword: zod.string().min(6),
+});
 router.put("/reset-pw", authMiddleware, async (req, res) => {
     const { success, error } = updatePasswordBody.safeParse(req.body);
 
@@ -230,5 +221,88 @@ router.get("/bulk", async (req, res) => {
         })),
     });
 });
+
+
+// Reset password using otp if registered user has forgotten
+const requestResetSchema = zod.object({
+    phoneNumber: zod.string().regex(/^\+?[1-9]\d{1,14}$/, "Invalid phone number format"),
+});
+router.post("/forgot-password/request-reset", async (req, res) => {
+    const { success, error } = requestResetSchema.safeParse(req.body);
+
+    if (!success) {
+        return res.status(400).json({ message: "Invalid input", errors: error.errors });
+    }
+
+    const { phoneNumber } = req.body;
+
+    try {
+        const user = await User.findOne({ phoneNumber });
+        if (!user) {
+            return res.status(200).json({
+                message: "If this phone number exists, a reset code has been sent.",
+            });
+        }
+
+        const otp = generateOTP();
+        const otpExpiry = new Date(Date.now() + 120 * 1000); 
+
+        user.resetOtp = await bcrypt.hash(otp, 10); 
+        user.resetOtpExpiry = otpExpiry;
+        await user.save();
+
+        const otpSent = await sendOTP(phoneNumber, otp);
+        if (!otpSent) {
+            return res.status(500).json({ message: "Failed to send reset code. Please try again." });
+        }
+
+        res.status(200).json({ message: "Reset code sent to the registered phone number." });
+    } catch (error) {
+        console.error("Error during password reset request:", error);
+        res.status(500).json({ message: "Internal server error." });
+    }
+});
+
+const resetPasswordSchema = zod.object({
+    phoneNumber: zod.string(),
+    resetCode: zod.string().length(6, "Reset code must be 6 digits"),
+    newPassword: zod.string().min(6, "Password must be at least 6 characters long"),
+});
+router.post("/forgot-password/reset", async (req, res) => {
+    const { success, error } = resetPasswordSchema.safeParse(req.body);
+
+    if (!success) {
+        return res.status(400).json({ message: "Invalid input", errors: error.errors });
+    }
+
+    const { phoneNumber, resetCode, newPassword } = req.body;
+
+    try {
+        const user = await User.findOne({ phoneNumber });
+        if (!user) {
+            return res.status(400).json({ message: "Invalid reset code or phone number." });
+        }
+
+        if (user.resetOtpExpiry < new Date()) {
+            return res.status(400).json({ message: "Reset code has expired. Please request a new one." });
+        }
+
+        const isOtpValid = await bcrypt.compare(resetCode, user.resetOtp);
+        if (!isOtpValid) {
+            return res.status(400).json({ message: "Invalid reset code." });
+        }
+
+        user.hashedPassword = await user.createHash(newPassword);
+        user.resetOtp = undefined; 
+        user.resetOtpExpiry = undefined;
+        await user.save();
+
+        res.status(200).json({ message: "Password reset successfully. You can now log in with your new password." });
+    } catch (error) {
+        console.error("Error during password reset:", error);
+        res.status(500).json({ message: "Internal server error." });
+    }
+});
+
 
 module.exports = router;

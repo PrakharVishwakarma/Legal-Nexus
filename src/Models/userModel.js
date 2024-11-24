@@ -63,6 +63,14 @@ const userSchema = new mongoose.Schema({
         type: Date,
         required: false,
     },
+    resetOtp: {
+        type: String,
+        required: false,
+    },
+    resetOtpExpiry: {
+        type: Date,
+        required: false,
+    },
 });
 
 userSchema.methods.createHash = async function (plainTextPassword) {

@@ -11,7 +11,7 @@ if (!accountSid || !authToken || !fromNumber) {
     console.error("Error: Twilio configuration is missing.");
     process.exit(1);
 }
-
+ 
 const client = twilio(accountSid, authToken);
 
 // OTP generation function with adjustable length
