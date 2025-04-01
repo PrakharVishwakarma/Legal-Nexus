@@ -14,7 +14,7 @@ const { restrictAuthenticated } = require("../../Middlewares/restrictAuthenticat
 const router = express.Router();
 
 // Zod Schemas
-const signUpBody = zod.object({
+const signUpBody = zod.object({ 
     role: zod.enum(roles),
     firstName: zod.string().min(2).max(50),
     lastName: zod.string().min(2).max(50),
