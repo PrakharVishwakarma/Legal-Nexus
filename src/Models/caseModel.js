@@ -45,6 +45,9 @@ const caseSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+    courtName: {
+      type: String,
+    },
     createdBy: {
       type: String, // wallet address
       required: true,

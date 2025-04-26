@@ -19,6 +19,7 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.1.0",
     "twilio": "^5.3.5",
+    "uuid-v4": "^0.1.0",
     "zod": "^3.22.4"
   },
   "devDependencies": {

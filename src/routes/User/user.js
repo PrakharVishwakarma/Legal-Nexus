@@ -100,6 +100,27 @@ router.post("/signup", restrictAuthenticated, async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 });
+/*
+Testing : POST api/v1/user/signup
+Request -
+Body : 
+  {
+    "role": "Civilian",
+    "firstName": "John",
+    "lastName": "Doe",
+    "aadharNumber": "123456789012",
+    "phoneNumber": "+918305394297",
+    "userId": "johnDoe01",
+    "password": "@91Jdln75"
+  }
+
+Response -
+200 OK
+
+{
+  "message": "OTP sent to the registered phone number."
+}
+*/
 
 // OTP Verification Route
 const otpBody = zod.object({
@@ -138,6 +159,22 @@ router.post("/verify-otp", restrictAuthenticated, async (req, res) => {
 
   res.json({ message: "User successfully verified" });
 });
+/*
+Testing : POST api/v1/user/verify-otp
+Request -
+Body :
+  {
+    "phoneNumber" : "+918305394297",
+    "otp" : "556063"    
+  }
+
+Response -
+200 OK
+
+{
+  "message": "User successfully verified"
+}
+*/
 
 // Login Route for All Roles
 const signInBody = zod.object({
@@ -178,11 +215,36 @@ router.post("/signin", async (req, res) => {
     return res.status(400).json({ message: "Invalid credentials" });
   }
 
-  const token = jwt.sign({ userId: user._id, role: user.role }, JWT_SECRET, {
-    expiresIn: "7d",
+  const token = jwt.sign(
+    { userMongoId: user._id, role: user.role },
+    JWT_SECRET,
+    {
+      expiresIn: "7d",
+    }
+  );
+  res.json({
+    message: "User Successfully logged in",
+    token,
   });
-  res.json({ token });
 });
+/*
+Testing : POST api/v1/user/signup
+Request -
+Body :  
+  {
+    "role" : "Civilian",
+    "identifier" : "johnDoe01",
+    "password" : "@91Jdln75"
+  }
+
+Response - 
+200 OK
+{
+  "message": "User Successfully logged in",
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyTW9uZ29JZCI6IjY4MDllNWE3YzhkMWJhNmJiOWQwMWM1NSIsInJvbGUiOiJDaXZpbGlhbiIsImlhdCI6MTc0NTQ4MDYyMSwiZXhwIjoxNzQ2MDg1NDIxfQ.Y7x7E3K_g7r0QmMkuccXdLoPbXukziczh4NlhnqEURk"
+}
+
+*/
 
 /*
 router.post("/signout", authMiddleware, (req, res) => {
@@ -354,7 +416,6 @@ router.post("/forgot-password/reset", async (req, res) => {
   }
 });
 
-
 router.get("/me", authMiddleware, async (req, res) => {
   try {
     const user = await User.findById(req.userMongoId).select(
@@ -380,45 +441,111 @@ router.get("/me", authMiddleware, async (req, res) => {
     return res.status(500).json({ message: "Internal server error." });
   }
 });
+/*
+Testing : GET api/v1/user/me
+Request -
+Body :  
 
+Authorization: Bearer <token>
+
+Response - 
+200 OK
+
+{
+  "_id": "6809e5a7c8d1ba6bb9d01c55",
+  "role": "Civilian",
+  "firstName": "John",
+  "lastName": "Doe",
+  "aadharNumber": "1234****9012",
+  "phoneNumber": "+918305394297",
+  "userId": "johnDoe01",
+  "isVerified": true,
+  "walletAddress": "0x9ec07a2a9170b09d2321a877b63fd1a7456224d9"
+}
+*/
 
 // PATCH /api/v1/user/update-wallet
-router.patch("/update-wallet", authMiddleware, async (req, res) => {
-  const { walletAddress } = req.body;
-
-  // Basic presence validation
-  if (!walletAddress || typeof walletAddress !== "string") {
-      return res.status(400).json({ message: "Invalid wallet address format." });
-  }
-
-  try {
-      // Check if the wallet is already in use by another user
-      const existing = await User.findOne({
-          walletAddress: walletAddress.toLowerCase(),
-          _id: { $ne: req.userMongoId }
-      });
-
-      if (existing) {
-          return res.status(409).json({ message: "This wallet address is already linked to another account." });
-      }
-
-      // Update the current user with the new wallet address
-      const user = await User.findByIdAndUpdate(
-          req.userMongoId,
-          { walletAddress: walletAddress.toLowerCase() },
-          { new: true, runValidators: true }
-      );
-
-      return res.status(200).json({
-          message: "Wallet address linked successfully.",
-          walletAddress: user.walletAddress,
-      });
-
-  } catch (error) {
-      console.error("Wallet update error:", error);
-      return res.status(500).json({ message: "Server error while linking wallet." });
-  }
+const updateWalletSchema = zod.object({
+  walletAddress: zod.string().startsWith("0x").length(42),
 });
 
+router.patch("/update-wallet", async (req, res) => {
+  const parsedData = updateWalletSchema.safeParse(req.body);
+
+  if (!parsedData.success) {
+    return res.status(400).json({
+      message: "Invalid wallet address format.",
+      errors: parsedData.error.errors,
+    });
+  }
+
+  const { walletAddress } = parsedData.data;
+
+  try {
+    // Extract and verify JWT manually
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res
+        .status(403)
+        .json({ message: "Authorization header missing or invalid" });
+    }
+
+    const token = authHeader.split(" ")[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const userMongoId = decoded.userMongoId;
+
+    // Check if wallet is already used by someone else
+    const existing = await User.findOne({
+      walletAddress: walletAddress.toLowerCase(),
+      _id: { $ne: userMongoId },
+    });
+
+    if (existing) {
+      return res.status(409).json({
+        message: "This wallet address is already linked to another account.",
+      });
+    }
+
+    // Save wallet address in lowercase format
+    const user = await User.findByIdAndUpdate(
+      userMongoId,
+      { walletAddress: walletAddress.toLowerCase() },
+      { new: true, runValidators: true }
+    );
+
+    return res.status(200).json({
+      message: "Wallet address linked successfully.",
+      walletAddress: user.walletAddress,
+    });
+  } catch (error) {
+    console.error("Wallet update error:", error);
+    if (error.name === "TokenExpiredError") {
+      return res
+        .status(401)
+        .json({ message: "Token expired. Please log in again." });
+    }
+    return res
+      .status(500)
+      .json({ message: "Server error while linking wallet." });
+  }
+});
+/*
+Testing : Patch api/v1/user/update-wallet
+Request -
+Body:  
+{
+  "walletAddress": "0x9eC07A2a9170B09D2321A877B63fd1a7456224d9"
+}
+
+Authorization: Bearer <token>
+
+Response - 
+200 OK
+  {
+    "message": "Wallet address linked successfully.",
+    "walletAddress": "0x9ec07a2a9170b09d2321a877b63fd1a7456224d9"
+  }
+
+*/
 
 module.exports = router;

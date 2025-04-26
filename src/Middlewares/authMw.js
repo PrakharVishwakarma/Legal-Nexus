@@ -2,9 +2,11 @@
 
 const jwt = require("jsonwebtoken");
 const { JWT_SECRET } = require("../config");
+const { User } = require("../Models/userModel");
 
-const authMiddleware = (req, res, next) => {
+const authMiddleware = async (req, res, next) => {
   const authHeader = req.headers.authorization;
+  // console.log("Authorization Header: ", authHeader);
 
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     return res.status(403).json({
@@ -13,11 +15,29 @@ const authMiddleware = (req, res, next) => {
   }
 
   const token = authHeader.split(" ")[1];
+  // console.log("Token: ", token);
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    req.userMongoId = decoded.userId;
-    req.userRole = decoded.role;
+
+    const user = await User.findById(decoded.userMongoId);
+    if (!user) {
+      return res
+        .status(401)
+        .json({ message: "User not found due to wrong jwt token" });
+    }
+    if (!user.walletAddress) {
+      return res
+        .status(401)
+        .json({
+          message: "User's wallet not found. Plase Connect to metamask.",
+        });
+    }
+
+    req.userWalletAddress = user.walletAddress;
+    req.userMongoId = user._id;
+    req.userRole = user.role;
+    
     next();
   } catch (err) {
     if (err.name === "TokenExpiredError") {

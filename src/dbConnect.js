@@ -1,4 +1,4 @@
-// /dbConnect.js
+// src/dbConnect.js
  
 const mongoose = require("mongoose");
 
