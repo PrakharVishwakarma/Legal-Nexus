@@ -14,6 +14,8 @@ const {
   grantAccess,
   revokeAccess,
   transferCaseOwnership,
+  registerCase,
+  closeCaseOnChain,
 } = require("../../utils/smartContract");
 
 const router = express.Router();
@@ -22,8 +24,8 @@ const createCaseSchema = z.object({
   title: z.string().min(3),
   description: z.string().optional(),
   courtName: z.string().optional(),
+  priority: z.enum(["Low", "Medium", "High"]).optional(),
 });
-
 router.post("/create", authMiddleware, async (req, res) => {
   try {
     const parsedData = createCaseSchema.safeParse(req.body);
@@ -74,10 +76,14 @@ router.post("/create", authMiddleware, async (req, res) => {
       ],
     });
 
+    // 🔥 Blockchain Smart Contract Call
+    const txHash = await registerCase(caseId, adminWallet);
+
     return res.status(201).json({
       message: "Case created successfully",
       caseId,
       caseDbId: newCase._id,
+      txHash, // Send txHash in response too
     });
   } catch (err) {
     console.error("❌ Case creation failed:", err);
@@ -422,15 +428,15 @@ router.patch("/:caseId/close", authMiddleware, async (req, res) => {
     }
 
     caseDoc.isClosed = true;
-
-    // Optionally, track close time (if field was added)
-    // caseDoc.closedAt = new Date();
-
     await caseDoc.save();
+
+    // 🔥 Blockchain Smart Contract Call
+    const txHash = await closeCaseOnChain(caseId);
 
     return res.status(200).json({
       message: "Case successfully closed",
       caseId: caseDoc.caseId,
+      txHash, // Send txHash in response too
     });
   } catch (err) {
     console.error("Error closing case:", err);

@@ -520,6 +520,4 @@ router.get("/:docId/logs", authMiddleware, async (req, res) => {
   }
 });
 
-
-
 module.exports = router;

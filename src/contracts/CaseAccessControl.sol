@@ -4,13 +4,18 @@ pragma solidity ^0.8.20;
 contract CaseAccessControl {
     address public owner;
 
+    struct CaseMetadata {
+        address admin;
+        bool isClosed;
+    }
+
+    mapping(bytes32 => CaseMetadata) public cases;
     mapping(bytes32 => mapping(address => bool)) public access;
 
     event AccessGranted(bytes32 indexed caseId, address indexed user);
     event AccessRevoked(bytes32 indexed caseId, address indexed user);
-
-    mapping(bytes32 => address) public caseAdmins;
-
+    event CaseRegistered(bytes32 indexed caseId, address indexed admin);
+    event CaseClosed(bytes32 indexed caseId);
     event CaseAdminChanged(bytes32 indexed caseId, address indexed newAdmin);
 
     constructor() {
@@ -20,6 +25,20 @@ contract CaseAccessControl {
     modifier onlyOwner() {
         require(msg.sender == owner, "Only owner can modify access");
         _;
+    }
+
+    modifier onlyCaseAdmin(bytes32 caseId) {
+        require(cases[caseId].admin == msg.sender, "Only case admin allowed");
+        _;
+    }
+
+    function registerCase(bytes32 caseId, address admin) external onlyOwner {
+        require(admin != address(0), "Invalid admin address");
+        require(cases[caseId].admin == address(0), "Case already registered");
+
+        cases[caseId] = CaseMetadata({admin: admin, isClosed: false});
+
+        emit CaseRegistered(caseId, admin);
     }
 
     function grantAccess(bytes32 caseId, address user) external onlyOwner {
@@ -44,7 +63,15 @@ contract CaseAccessControl {
         address newAdmin
     ) external onlyOwner {
         require(newAdmin != address(0), "Invalid address");
-        caseAdmins[caseId] = newAdmin;
+        require(cases[caseId].admin != address(0), "Case not registered");
+        cases[caseId].admin = newAdmin;
         emit CaseAdminChanged(caseId, newAdmin);
+    }
+
+    function closeCase(bytes32 caseId) external onlyOwner {
+        require(cases[caseId].admin != address(0), "Case not registered");
+        require(!cases[caseId].isClosed, "Case already closed");
+        cases[caseId].isClosed = true;
+        emit CaseClosed(caseId);
     }
 }
