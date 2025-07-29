@@ -31,11 +31,6 @@ const participantSchema = new mongoose.Schema({
 
 const caseSchema = new mongoose.Schema(
   {
-    caseId: {
-      type: String,
-      required: true,
-      unique: true,
-    },
     title: {
       type: String,
       required: true,

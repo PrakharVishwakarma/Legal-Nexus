@@ -6,12 +6,12 @@ const sharedWithSchema = new mongoose.Schema({
   wallet: {
     type: String,
     required: true,
-    match: /^0x[a-fA-F0-9]{40}$/
+    match: /^0x[a-fA-F0-9]{40}$/,
   },
   sharedAt: {
     type: Date,
-    default: Date.now
-  }
+    default: Date.now,
+  },
 });
 
 const personalDocumentSchema = new mongoose.Schema(
@@ -20,37 +20,37 @@ const personalDocumentSchema = new mongoose.Schema(
       type: String, // Wallet address
       required: true,
       match: /^0x[a-fA-F0-9]{40}$/,
-      index: true
+      index: true,
     },
 
     title: {
       type: String,
       required: true,
-      trim: true
+      trim: true,
     },
 
     description: {
       type: String,
-      trim: true
+      trim: true,
     },
 
     fileType: {
       type: String,
-      required: true
+      required: true,
     },
 
     fileSize: {
-      type: Number
+      type: Number,
     },
 
     ipfsCid: {
       type: String,
-      required: true
+      required: true,
     },
 
     encrypted: {
       type: Boolean,
-      default: false
+      default: false,
     },
 
     sharedWith: [sharedWithSchema],
@@ -58,23 +58,28 @@ const personalDocumentSchema = new mongoose.Schema(
     linkedToCaseId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Case",
-      default: null
+      default: null,
     },
 
     isArchived: {
       type: Boolean,
-      default: false
+      default: false,
     },
 
     isDeleted: {
       type: Boolean,
-      default: false
-    }
+      default: false,
+    },
   },
   {
-    timestamps: true
+    timestamps: true,
   }
 );
 
-const PersonalDocument = mongoose.model("PersonalDocument", personalDocumentSchema);
+personalDocumentSchema.index({ "sharedWith.wallet": 1 });
+
+const PersonalDocument = mongoose.model(
+  "PersonalDocument",
+  personalDocumentSchema
+);
 module.exports = PersonalDocument;

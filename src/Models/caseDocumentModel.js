@@ -3,7 +3,7 @@
 const mongoose = require("mongoose");
 
 const caseDocumentSchema = new mongoose.Schema(
-  {
+  { 
     caseId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Case",
@@ -40,6 +40,7 @@ const caseDocumentSchema = new mongoose.Schema(
           type: String,
           match: /^0x[a-fA-F0-9]{40}$/,
           required: true,
+          index: true,
         },
         canView: {
           type: Boolean,

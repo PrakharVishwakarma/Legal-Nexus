@@ -3,6 +3,7 @@ const express = require("express");
 const Case = require("../../Models/caseModel");
 const CaseDocument = require("../../Models/caseDocumentModel");
 const AccessAuditLog = require("../../Models/accessAuditLogModel");
+const { User } = require("../../Models/userModel");
 const { authMiddleware } = require("../../Middlewares/authMw");
 const z = require("zod");
 
@@ -50,12 +51,12 @@ router.post("/upload", authMiddleware, async (req, res) => {
       return res.status(404).json({ message: "Case not found" });
     }
 
-    const wallet = req.userWalletAddress.toLowerCase();
-    const isAdmin = caseDoc.admin.toLowerCase() === wallet;
+    const wallet = req.userWalletAddress;
+    const adminWallet = caseDoc.admin;
 
-    const participant = caseDoc.participants.find(
-      (p) => p.wallet.toLowerCase() === wallet
-    );
+    const isAdmin = wallet === adminWallet;
+
+    const participant = caseDoc.participants.find((p) => p.wallet === wallet);
 
     const canUpload = isAdmin || participant?.permissions?.canUpload;
 
@@ -65,15 +66,35 @@ router.post("/upload", authMiddleware, async (req, res) => {
         .json({ message: "You do not have upload permissions for this case" });
     }
 
+    const accessMap = new Map();
+
+    // Add existing accessControl (normalized)
+    for (const entry of accessControl) {
+      const addr = entry.wallet;
+      accessMap.set(addr, {
+        wallet: addr,
+        canView: entry.canView ?? false,
+        canDelete: entry.canDelete ?? false,
+      });
+    }
+
     // Ensure uploader has full access
-    const completeAccessControl = [
-      ...accessControl,
-      {
-        wallet,
+    accessMap.set(wallet, {
+      wallet,
+      canView: true,
+      canDelete: true,
+    });
+
+    // Ensure admin has full access (unless already the uploader)
+    if (!accessMap.has(adminWallet)) {
+      accessMap.set(adminWallet, {
+        wallet: adminWallet,
         canView: true,
         canDelete: true,
-      },
-    ];
+      });
+    }
+
+    const completeAccessControl = Array.from(accessMap.values());
     // TODO => While changing the admin of a case, update the access controls accordingly of all caseDoc belonging to that case
 
     const newDoc = await CaseDocument.create({
@@ -107,8 +128,31 @@ router.post("/upload", authMiddleware, async (req, res) => {
     return res.status(500).json({ message: "Failed to upload document" });
   }
 });
+/*
+Testing : POST /case-doc/upload
 
-// ------------ PATCH /case-doc/:docId/grant-access ------------
+Body - 
+{
+  "caseId": "15da32c9-4b9d-4029-8bfb-3b8b7947c510",
+  "title": "string",
+  "fileType": "string",
+  "fileSize": 12345,
+  "ipfsCid": "bafybeid37edltjdqwi4frb3ki5c4ty73a7p6iuws3q5gerwdbpkcxvhceq",
+  "encrypted": false,
+}
+
+Headers -
+Authorization : Bearer <token>
+
+Response - 
+{
+  "message": "Document uploaded successfully",
+  "docId": "680f93f3b5ff6d7f9c2e2ba9"
+}
+
+*/
+
+// ------------ PATCH api/v1/case-doc/:caseId/:docId/grant-access ------------
 const grantAccessSchema = z.object({
   targetWallet: z
     .string()
@@ -118,102 +162,157 @@ const grantAccessSchema = z.object({
     canDelete: z.boolean().optional(),
   }),
 });
-router.patch("/:docId/grant-access", authMiddleware, async (req, res) => {
-  try {
-    const { docId } = req.params;
-    const userWallet = req.userWalletAddress.toLowerCase();
+router.patch(
+  "/:caseId/:docId/grant-access",
+  authMiddleware,
+  async (req, res) => {
+    try {
+      const { caseId, docId } = req.params;
+      const normalizedUserWallet = req.userWalletAddress.toLowerCase();
 
-    const parsed = grantAccessSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res
-        .status(400)
-        .json({ message: "Invalid input", errors: parsed.error.errors });
-    }
-    const { targetWallet, permissions } = parsed.data;
-    const { canView = false, canDelete = false } = permissions;
+      const parsed = grantAccessSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res
+          .status(400)
+          .json({ message: "Invalid input", errors: parsed.error.errors });
+      }
 
-    // Step 1: Find document
-    const doc = await CaseDocument.findById(docId);
-    if (!doc || doc.isDeleted) {
-      return res
-        .status(404)
-        .json({ message: "Document not found or deleted." });
-    }
+      const { targetWallet, permissions } = parsed.data;
+      const normalizedTargetWallet = targetWallet.toLowerCase();
+      const { canView = false, canDelete = false } = permissions;
 
-    // Step 2: Get parent case
-    const caseData = await Case.findById(doc.caseId);
-    if (!caseData) {
-      return res.status(404).json({ message: "Parent case not found." });
-    }
+      if (normalizedUserWallet === normalizedTargetWallet) {
+        return res
+          .status(400)
+          .json({ message: "You cannot grant access to yourself." });
+      }
 
-    // Step 3: Verify requester is admin
-    if (caseData.admin.toLowerCase() !== userWallet) {
-      return res
-        .status(403)
-        .json({ message: "Only case admin can grant access." });
-    }
+      const [caseData, doc] = await Promise.all([
+        Case.findById(caseId),
+        CaseDocument.findById(docId),
+      ]);
 
-    // Step 4: Check if targetWallet is a participant in the case
-    const isParticipant = caseData.participants.some(
-      (p) => p.wallet.toLowerCase() === targetWallet.toLowerCase()
-    );
+      if (!caseData) {
+        return res.status(404).json({ message: "Parent case not found." });
+      }
 
-    if (!isParticipant) {
-      return res
-        .status(400)
-        .json({ message: "Target wallet is not a case participant." });
-    }
+      if (!doc) {
+        return res.status(404).json({ message: "Document not found." });
+      }
 
-    // Step 5: Update or add accessControl entry
-    const idx = doc.accessControl.findIndex(
-      (entry) => entry.wallet.toLowerCase() === targetWallet.toLowerCase()
-    );
+      if (normalizedTargetWallet === caseData.admin.toLowerCase()) {
+        return res
+          .status(400)
+          .json({ message: "Cannot grant access to case admin." });
+      }
 
-    if (idx !== -1) {
-      // Update existing permissions
-      doc.accessControl[idx].canView = canView;
-      doc.accessControl[idx].canDelete = canDelete;
-    } else {
-      // Add new access control entry
-      doc.accessControl.push({
-        wallet: targetWallet.toLowerCase(),
-        canView,
-        canDelete,
+      // Only uploader or admin can grant access
+      const isUploader = doc.uploadedBy.toLowerCase() === normalizedUserWallet;
+      const isAdmin = caseData.admin.toLowerCase() === normalizedUserWallet;
+      if (!isUploader && !isAdmin) {
+        return res.status(403).json({
+          message: "Only uploader or case admin can grant access.",
+        });
+      }
+
+      // Ensure target is a case participant
+      const isParticipant = caseData.participants.some(
+        (p) => p.wallet.toLowerCase() === normalizedTargetWallet
+      );
+      if (!isParticipant) {
+        return res.status(403).json({
+          message: "Target wallet must be a participant in the case.",
+        });
+      }
+
+      // Check if already exists with same permissions
+      const idx = doc.accessControl.findIndex(
+        (entry) => entry.wallet.toLowerCase() === normalizedTargetWallet
+      );
+      if (
+        idx !== -1 &&
+        doc.accessControl[idx].canView === canView &&
+        doc.accessControl[idx].canDelete === canDelete
+      ) {
+        return res.status(200).json({
+          message:
+            "No change needed. Access already granted with same permissions.",
+        });
+      }
+
+      if (idx !== -1) {
+        doc.accessControl[idx].canView = canView;
+        doc.accessControl[idx].canDelete = canDelete;
+      } else {
+        doc.accessControl.push({
+          wallet: normalizedTargetWallet,
+          canView,
+          canDelete,
+        });
+      }
+
+      await doc.save();
+
+      await AccessAuditLog.create({
+        docId: doc._id,
+        docModel: "CaseDocument",
+        caseId: doc.caseId,
+        userWallet: normalizedUserWallet,
+        userRole: req.userRole,
+        action: "SHARED",
+        notes: `Granted ${[canView && "view", canDelete && "delete"]
+          .filter(Boolean)
+          .join(" & ")} access to ${targetWallet}`,
+        ipAddress: req.ip || null,
       });
+
+      return res.status(200).json({
+        message: "Access granted successfully",
+        grantedTo: targetWallet,
+        permissions: { canView, canDelete },
+      });
+    } catch (err) {
+      console.error("Error granting access:", err);
+      return res
+        .status(500)
+        .json({ message: "Server error while granting access." });
     }
-
-    await doc.save();
-
-    await AccessAuditLog.create({
-      docId: doc._id,
-      docModel: "CaseDocument",
-      caseId: doc.caseId,
-      userWallet: userWallet,
-      userRole: req.userRole,
-      action: "SHARED",
-      notes: `Granted ${canView ? "view" : ""}${
-        canView && canDelete ? " & " : ""
-      }${canDelete ? "delete" : ""} to ${targetWallet}`,
-      ipAddress: req.ip || null,
-    });
-
-    return res.status(200).json({
-      message: "Access granted successfully",
-      grantedTo: targetWallet.toLowerCase(),
-      permissions: { canView, canDelete },
-    });
-  } catch (err) {
-    console.error("Error granting access:", err);
-    return res
-      .status(500)
-      .json({ message: "Server error while granting access." });
   }
-});
+);
+
+/*
+Testing : POST /case-doc/:docId/grant-access
+
+Body - 
+{
+  "targetWallet": "0x9ec07a2a9170b09d2321a877b63fd1a7456224d9",
+  "permissions": {
+    "canView": true,
+    "canDelete": false
+  }
+}
+Headers -
+Authorization : Bearer <token>
+
+Response - 
+{
+  "message": "Access granted successfully",
+  "grantedTo": "0x9ec07a2a9170b09d2321a877b63fd1a7456224d9",
+  "permissions": {
+    "canView": true,
+    "canDelete": false
+  }
+}
+
+*/
+
+/* 
+There is no need for extra revoke-access route. becuase the grant-access route can handle both the functionality of granting and revoking access.
 
 // ------------ PATCH /case-doc/:docId/revoke-access ------------
 const revokeAccessSchema = z.object({
   targetWallet: z
-    .string()
+  .string()
     .regex(/^0x[a-fA-F0-9]{40}$/, "Invalid Ethereum wallet address"),
   permissions: z.object({
     canView: z.boolean().optional(),
@@ -233,37 +332,37 @@ router.patch("/:docId/revoke-access", authMiddleware, async (req, res) => {
 
     const { targetWallet, permissions } = parsed.data;
     const { canView = false, canDelete = false } = permissions;
-
+    
     if (!canView && !canDelete) {
       return res.status(400).json({
         message:
           "At least one permission (canView or canDelete) must be set to true for revocation.",
-      });
-    }
-
+        });
+      }
+      
     const doc = await CaseDocument.findById(docId);
     if (!doc || doc.isDeleted) {
       return res
-        .status(404)
-        .json({ message: "Document not found or deleted." });
+      .status(404)
+      .json({ message: "Document not found or deleted." });
     }
-
+    
     const caseData = await Case.findById(doc.caseId);
     if (!caseData) {
       return res.status(404).json({ message: "Parent case not found." });
     }
-
+    
     const adminWallet = req.userWalletAddress.toLowerCase();
     if (caseData.admin.toLowerCase() !== adminWallet) {
       return res.status(403).json({
         message: "Only the case admin can revoke access.",
       });
     }
-
+    
     const index = doc.accessControl.findIndex(
       (entry) => entry.wallet.toLowerCase() === targetWallet.toLowerCase()
     );
-
+    
     if (index === -1) {
       return res.status(404).json({
         message: "Target wallet does not have any access on this document.",
@@ -281,7 +380,7 @@ router.patch("/:docId/revoke-access", authMiddleware, async (req, res) => {
     }
 
     await doc.save();
-
+    
     // Log the action
     await AccessAuditLog.create({
       docId: doc._id,
@@ -294,7 +393,7 @@ router.patch("/:docId/revoke-access", authMiddleware, async (req, res) => {
         canView && canDelete ? " & " : ""
       }${canDelete ? "delete" : ""} for ${targetWallet}`,
     });
-
+    
     return res.status(200).json({
       message: "Access revoked successfully.",
       target: targetWallet,
@@ -307,16 +406,244 @@ router.patch("/:docId/revoke-access", authMiddleware, async (req, res) => {
     });
   }
 });
+Testing : POST /case-doc/:docId/revoke-access
 
+Body - 
+{
+  "targetWallet": "0x9ec07a2a9170b09d2321a877b63fd1a7456224d9",
+  "permissions": {
+    "canView": false,
+    "canDelete": false
+  }
+}
+Headers -
+Authorization : Bearer <token>
+
+Response - 
+*/
+
+// PATCH /case-doc/:docId/revoke-access
+const revokeAccessSchema = z.object({
+  targetWallet: z
+    .string()
+    .regex(/^0x[a-fA-F0-9]{40}$/, "Invalid Ethereum address"),
+});
+router.patch(
+  "/:caseId/:docId/revoke-access",
+  authMiddleware,
+  async (req, res) => {
+    try {
+      const { caseId, docId } = req.params;
+      const parsed = revokeAccessSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res
+          .status(400)
+          .json({ message: "Invalid input", errors: parsed.error.errors });
+      }
+
+      const { targetWallet } = parsed.data;
+
+      const requesterWallet = req.userWalletAddress.toLowerCase();
+      const normalizedTarget = targetWallet.toLowerCase();
+
+      // Using promise.all
+      const [parentCase, doc] = await Promise.all([
+        Case.findById(caseId),
+        CaseDocument.findById(docId),
+      ]);
+
+      if (!parentCase) {
+        return res.status(404).json({ message: "Parent case not found." });
+      }
+
+      if (!doc) {
+        return res.status(404).json({ message: "Document not found." });
+      }
+
+      const caseAdmin = parentCase.admin.toLowerCase();
+      const uploaderWallet = doc.uploadedBy.toLowerCase();
+
+      if (normalizedTarget === requesterWallet) {
+        return res.status(403).json({
+          message: "You cannot revoke access of yourself.",
+        });
+      }
+
+      if (requesterWallet !== caseAdmin && requesterWallet !== uploaderWallet) {
+        return res.status(403).json({
+          message:
+            "Only the case admin or the creator of document can revoke access.",
+        });
+      }
+
+      // Protect admin from being removed
+      if (normalizedTarget === caseAdmin) {
+        return res.status(403).json({
+          message: "Cannot revoke access from the case admin.",
+        });
+      }
+
+      // Check if target is in accessControl[]
+      const index = doc.accessControl.findIndex(
+        (entry) => entry.wallet.toLowerCase() === normalizedTarget
+      );
+
+      if (index === -1) {
+        return res.status(404).json({
+          message: "Access entry not found for the provided wallet.",
+        });
+      }
+
+      // Remove the entry from accessControl[]
+      doc.accessControl.splice(index, 1);
+      await doc.save();
+
+      // Log audit
+      await AccessAuditLog.create({
+        docId,
+        docModel: "CaseDocument",
+        caseId: parentCase._id,
+        userWallet: requesterWallet,
+        userRole: req.userRole,
+        action: "REVOKED",
+        affectedWallet: normalizedTarget,
+        timestamp: new Date(),
+        notes: `Revoked access from ${normalizedTarget}`,
+      });
+
+      return res.status(200).json({
+        message: "Access revoked successfully",
+        revokedFrom: normalizedTarget,
+      });
+    } catch (err) {
+      console.error("Error revoking access:", err);
+      return res
+        .status(500)
+        .json({ message: "Server error while revoking access." });
+    }
+  }
+);
+
+/*
+router.get("/:caseId", authMiddleware, async (req, res) => {
+  try {
+    const { caseId } = req.params;
+    const wallet = req.userWalletAddress.toLowerCase();
+    
+    // Validate case existence
+    const caseDoc = await Case.findOne({_id : caseId});
+    if (!caseDoc) {
+      return res.status(404).json({ message: "Case not found" });
+    }
+    
+    const isAdmin = caseDoc.admin.toLowerCase() === wallet;
+    const participant = caseDoc.participants.find(
+      (p) => p.wallet.toLowerCase() === wallet
+    );
+    
+    if (!isAdmin && !participant) {
+      return res.status(403).json({ message: "You are not a participant" });
+    }
+    
+    const canView = isAdmin || participant?.permissions?.canView;
+    
+    if (!canView) {
+      return res
+      .status(403)
+        .json({ message: "You do not have view permissions for this case" });
+      }
+      
+      const documents = await CaseDocument.find({
+        caseId,
+        isDeleted: false,
+        accessControl: {
+          $elemMatch: {
+            wallet: wallet,
+            canView: true,
+          },
+        },
+      }).sort({ createdAt: -1 });
+      
+      if (!documents || documents.length === 0) {
+        console.log("No documents found");
+        return res.status(404).json({ message: "No documents found" });
+      }
+      
+      const sanitizedDocs = documents.map((doc) => ({
+        _id: doc._id,
+        title: doc.title,
+        fileType: doc.fileType,
+        fileSize: doc.fileSize,
+        ipfsCid: doc.ipfsCid,
+        encrypted: doc.encrypted,
+        uploadedBy: doc.uploadedBy,
+        createdAt: doc.createdAt,
+      }));
+      
+      return res.status(200).json({
+        message: "Documents fetched successfully",
+        documents: sanitizedDocs,
+        caseId,
+      });
+    } catch (err) {
+      console.error("Error fetching case documents:", err);
+      return res
+      .status(500)
+      .json({ message: "Server error fetching documents." });
+    }
+  });
+  */
+
+const querySchema = z.object({
+  search: z.string().trim().min(1).optional(),
+  filterType: z.enum(["all", "docs", "image", "media", "other"]).default("all"),
+  accessFilter: z.enum(["all", "canDelete"]).default("all"),
+  sortBy: z
+    .enum(["newest", "oldest", "titleAsc", "titleDesc", "sizeAsc", "sizeDesc"])
+    .default("newest"),
+  page: z.preprocess((val) => {
+    const num = Number(val);
+    return isNaN(num) ? 1 : num;
+  }, z.number().int().min(1).default(1)),
+  limit: z.preprocess(
+    (val) => {
+      const num = Number(val);
+      return isNaN(num) ? 12 : num;
+    },
+    z
+      .number()
+      .int()
+      .refine((val) => [12, 24, 48, 96].includes(val), {
+        message: "limitOfAPage must be one of: 12, 24, 48, 96",
+      })
+      .default(12)
+  ),
+});
 router.get("/:caseId", authMiddleware, async (req, res) => {
   try {
     const { caseId } = req.params;
     const wallet = req.userWalletAddress.toLowerCase();
 
-    // Validate case existence
-    const caseDoc = await Case.findOne({ _id: caseId });
+    const parsedQuery = querySchema.safeParse(req.query);
+    if (!parsedQuery.success) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid query parameters",
+        errors: parsedQuery.error.format(),
+      });
+    }
+
+    const { search, filterType, accessFilter, sortBy, page, limit } =
+      parsedQuery.data;
+
+    const skip = (page - 1) * limit;
+
+    const caseDoc = await Case.findById(caseId);
     if (!caseDoc) {
-      return res.status(404).json({ message: "Case not found" });
+      return res.status(404).json({
+        success: false,
+        message: "Case not found",
+      });
     }
 
     const isAdmin = caseDoc.admin.toLowerCase() === wallet;
@@ -325,18 +652,21 @@ router.get("/:caseId", authMiddleware, async (req, res) => {
     );
 
     if (!isAdmin && !participant) {
-      return res.status(403).json({ message: "You are not a participant" });
+      return res.status(403).json({
+        success: false,
+        message: "You are not authorized to access this case",
+      });
     }
 
     const canView = isAdmin || participant?.permissions?.canView;
-
     if (!canView) {
-      return res
-        .status(403)
-        .json({ message: "You do not have view permissions for this case" });
+      return res.status(403).json({
+        success: false,
+        message: "You do not have view permissions for this case",
+      });
     }
 
-    const documents = await CaseDocument.find({
+    const query = {
       caseId,
       isDeleted: false,
       accessControl: {
@@ -345,7 +675,58 @@ router.get("/:caseId", authMiddleware, async (req, res) => {
           canView: true,
         },
       },
-    }).sort({ createdAt: -1 });
+    };
+
+    if (search) {
+      query.title = { $regex: search, $options: "i" };
+    }
+
+    if (filterType !== "all") {
+      const mimeGroups = {
+        docs: [
+          "application/pdf",
+          "application/msword",
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ],
+        image: ["image/jpeg", "image/png", "image/webp", "image/svg+xml"],
+        media: ["video/mp4", "audio/mpeg"],
+        other: ["application/zip", "application/octet-stream"],
+      };
+      query.fileType = { $in: mimeGroups[filterType] || [] };
+    }
+
+    if (accessFilter === "canDelete") {
+      query.accessControl.$elemMatch.canDelete = true;
+    }
+
+    let sort = { createdAt: -1 }; // Default: newest first
+    switch (sortBy) {
+      case "oldest":
+        sort = { createdAt: 1 };
+        break;
+      case "titleAsc":
+        sort = { title: 1 };
+        break;
+      case "titleDesc":
+        sort = { title: -1 };
+        break;
+      case "sizeAsc":
+        sort = { fileSize: 1 };
+        break;
+      case "sizeDesc":
+        sort = { fileSize: -1 };
+        break;
+    }
+
+    const [documents, totalDocs] = await Promise.all([
+      CaseDocument.find(query)
+        .collation({ locale: "en", strength: 2 })
+        .sort(sort)
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      CaseDocument.countDocuments(query),
+    ]);
 
     const sanitizedDocs = documents.map((doc) => ({
       _id: doc._id,
@@ -358,61 +739,103 @@ router.get("/:caseId", authMiddleware, async (req, res) => {
       createdAt: doc.createdAt,
     }));
 
+    const totalPages = Math.ceil(totalDocs / limit);
+
     return res.status(200).json({
+      success: true,
       message: "Documents fetched successfully",
       documents: sanitizedDocs,
-      caseId,
+      pagination: {
+        totalDocs,
+        currentPage: page,
+        limit,
+        totalPages,
+        hasNextPage: page < totalPages,
+        hasPrevPage: page > 1,
+      },
+      filters: {
+        search: search || null,
+        filterType,
+        accessFilter,
+        sortBy,
+      },
     });
   } catch (err) {
-    console.error("Error fetching case documents:", err);
-    return res
-      .status(500)
-      .json({ message: "Server error fetching documents." });
+    console.error("Error fetching documents:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Server error while fetching documents.",
+      ...(process.env.NODE_ENV === "development" && { error: err.message }),
+    });
   }
 });
 
-// ---------------- GET /case-doc/:docId/view ------------------
-router.get("/:docId/view", authMiddleware, async (req, res) => {
+// GET /:caseId/view/:docId
+router.get("/:caseId/view/:docId", authMiddleware, async (req, res) => {
   try {
-    const { docId } = req.params;
+    const { caseId, docId } = req.params;
     const wallet = req.userWalletAddress.toLowerCase();
 
-    // Validate document existence
-    const document = await CaseDocument.findOne({
-      _id: docId,
-      isDeleted: false,
-    });
+    // Fetch case and document in parallel
+    const [caseDoc, document] = await Promise.all([
+      Case.findById(caseId),
+      CaseDocument.findOne({ _id: docId, caseId, isDeleted: false }),
+    ]);
+
+    if (!caseDoc) {
+      return res.status(404).json({ message: "Case not found" });
+    }
+
     if (!document) {
       return res.status(404).json({ message: "Document not found" });
     }
 
-    // Check access permissions
-    const hasAccess = document.accessControl.some(
-      (access) => access.wallet.toLowerCase() === wallet && access.canView
+    const isUserCaseAdmin = caseDoc.admin.toLowerCase() === wallet;
+    const isUserDocCreator = document.uploadedBy.toLowerCase() === wallet;
+
+    // Access control check
+    const docAccess = document.accessControl.find(
+      (entry) => entry.wallet.toLowerCase() === wallet
     );
 
-    if (!hasAccess) {
+    const hasUserViewAccess = docAccess?.canView || false;
+    const hasUserDeleteAccess = docAccess?.canDelete || false;
+
+    if (!hasUserViewAccess && !isUserCaseAdmin && !isUserDocCreator) {
       return res.status(403).json({
         message: "You do not have view permissions for this document",
       });
     }
 
-    // Audit Log
+    // Audit log
     await AccessAuditLog.create({
       docId: document._id,
       docModel: "CaseDocument",
-      caseId: document.caseId,
+      caseId: caseDoc._id,
       userWallet: wallet,
       userRole: req.userRole,
       action: "VIEWED",
     });
 
-    // Step 5: Sanitize and respond
+    // Sanitize response
     const { accessControl, __v, ...sanitizedDocument } = document.toObject();
 
     return res.status(200).json({
       message: "Document fetched successfully",
       sanitizedDocument,
+      meta: {
+        isUserCaseAdmin,
+        isUserDocCreator,
+        hasUserViewAccess:
+          hasUserViewAccess || isUserCaseAdmin || isUserDocCreator,
+        hasUserDeleteAccess:
+          hasUserDeleteAccess || isUserCaseAdmin || isUserDocCreator,
+        caseMeta: {
+          title: caseDoc.title,
+          isClosed: caseDoc.isClosed,
+          caseId: caseDoc._id,
+        },
+      },
     });
   } catch (err) {
     console.error("Error fetching case document:", err);
@@ -420,6 +843,59 @@ router.get("/:docId/view", authMiddleware, async (req, res) => {
   }
 });
 
+router.get("/:caseId/:docId/participants", authMiddleware, async (req, res) => {
+  try {
+    const { caseId, docId } = req.params;
+
+    const document = await CaseDocument.findOne({
+      _id: docId,
+      caseId,
+      isDeleted: false,
+    });
+
+    if (!document) {
+      return res.status(404).json({ message: "Document not found" });
+    }
+
+    const accessControl = document.accessControl || [];
+
+    // Get unique wallets
+    const wallets = accessControl.map((entry) => entry.wallet);
+
+    // Fetch user details from User model
+    const users = await User.find({ walletAddress: { $in: wallets } }).select(
+      "walletAddress role phoneNumber userId employeeId"
+    );
+
+    const userMap = new Map(users.map((user) => [user.walletAddress, user]));
+
+    // Merge accessControl with user info
+    const participants = accessControl.map((entry) => {
+      const wallet = entry.wallet;
+      const user = userMap.get(wallet);
+
+      return {
+        wallet: entry.wallet,
+        canView: entry.canView || false,
+        canDelete: entry.canDelete || false,
+        userId: user?.userId || null,
+        employeeId: user?.employeeId || null,
+        role: user?.role || "Unknown",
+        phoneNumber: user?.phoneNumber || null,
+      };
+    });
+
+    return res.status(200).json({
+      message: "Document participants fetched successfully",
+      participants,
+    });
+  } catch (err) {
+    console.error("Error fetching document participants:", err);
+    return res
+      .status(500)
+      .json({ message: "Server error fetching participants." });
+  }
+});
 
 // ---------------- DELETE /case-doc/:docId ------------------
 router.delete("/:docId", authMiddleware, async (req, res) => {
@@ -444,11 +920,12 @@ router.delete("/:docId", authMiddleware, async (req, res) => {
 
     // Check access permissions
     const isAdmin = caseData.admin.toLowerCase() === wallet;
+    const isUploader = document.uploadedBy.toLowerCase() === wallet;
     const hasAccess = document.accessControl.some(
       (access) => access.wallet.toLowerCase() === wallet && access.canDelete
     );
 
-    if (!isAdmin && !hasAccess) {
+    if (!isAdmin && !isUploader && !hasAccess) {
       return res.status(403).json({
         message: "You do not have delete permissions for this document",
       });

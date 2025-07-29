@@ -33,20 +33,25 @@ const userSchema = new mongoose.Schema(
       type: String,
       required: true,
       unique: true,
+      index: true,
     },
     userId: {
       type: String,
       unique: true,
+      sparse: true,
       required: function () {
         return this.role === "Civilian" || this.role === "Admin";
       },
+      index: true,
     },
     employeeId: {
       type: String,
       unique: true,
+      sparse: true,
       required: function () {
         return ["Judge", "Lawyer", "Police"].includes(this.role);
       },
+      index: true,
     },
     hashedPassword: {
       type: String,
@@ -80,6 +85,7 @@ const userSchema = new mongoose.Schema(
       trim: true,
       lowercase: true,
       match: /^0x[a-fA-F0-9]{40}$/, // Ethereum address pattern
+      index: true,
     },
   },
   {

@@ -6,6 +6,8 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const { User, roles } = require("../../Models/userModel");
 const { Employee } = require("../../Models/employeeModel");
+const Case = require("../../Models/caseModel");
+const CaseDocument = require("../../Models/caseDocumentModel");
 const { JWT_SECRET, OTP_EXPIRY } = require("../../config");
 const { generateOTP, sendOTP } = require("../../utils/otpService");
 const { authMiddleware } = require("../../Middlewares/authMw");
@@ -27,6 +29,7 @@ const signUpBody = zod.object({
   password: zod.string().min(6),
 });
 router.post("/signup", restrictAuthenticated, async (req, res) => {
+  console.log(req.body);
   const { success, error } = signUpBody.safeParse(req.body);
 
   if (!success) {
@@ -86,6 +89,8 @@ router.post("/signup", restrictAuthenticated, async (req, res) => {
     });
 
     await newUser.save();
+
+    // console.log(newUser);
 
     const otpSent = await sendOTP(phoneNumber, otp);
     if (!otpSent) {
@@ -480,6 +485,7 @@ router.patch("/update-wallet", async (req, res) => {
   }
 
   const { walletAddress } = parsedData.data;
+  console.log(parsedData.data);
 
   try {
     // Extract and verify JWT manually
@@ -547,5 +553,213 @@ Response -
   }
 
 */
+
+// ------------- GET /api/v1/user/search-wallet -----------------
+router.get("/search-wallet", authMiddleware, async (req, res) => {
+  try {
+    const { q } = req.query;
+    if (!q || q.trim() === "") {
+      return res.status(400).json({ message: "Query param 'q' is required" });
+    }
+
+    const searchRegex = new RegExp(q, "i"); // case-insensitive
+
+    const matchedUsers = await User.find({
+      $or: [
+        { phoneNumber: { $regex: searchRegex } },
+        { userId: { $regex: searchRegex } }, // assuming userId field exists
+        { employeeId: { $regex: searchRegex } }, // if employees have employeeId
+      ],
+      walletAddress: { $exists: true, $ne: null }, // wallet must be linked
+    })
+      .select("_id name walletAddress role phoneNumber")
+      .limit(10);
+
+    return res.status(200).json({
+      message: "Matched users fetched successfully",
+      users: matchedUsers,
+    });
+  } catch (err) {
+    console.error("Search Wallet Error:", err);
+    return res
+      .status(500)
+      .json({ message: "Server error during wallet search" });
+  }
+});
+
+router.get("/wallet-address", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res
+        .status(401)
+        .json({ message: "Authorization header missing or malformed" });
+    }
+
+    const token = authHeader.split(" ")[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    const user = await User.findById(decoded.userMongoId).select(
+      "walletAddress"
+    );
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    if (!user.walletAddress) {
+      return res.status(404).json({ message: "Wallet address not found" });
+    }
+
+    return res.status(200).json({
+      walletAddress: user.walletAddress,
+    });
+  } catch (err) {
+    console.error("Error fetching wallet address:", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.get("/role", authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.userMongoId).select("role");
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    return res.status(200).json({
+      role: user.role,
+    });
+  } catch (err) {
+    console.error("Error fetching user role:", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+// Zod schema for validating query
+const searchQuerySchema = zod.object({
+  q: zod.string().min(2, "Query must be at least 2 characters long"),
+});
+router.get("/search", authMiddleware, async (req, res) => {
+  try {
+    const parseResult = searchQuerySchema.safeParse(req.query);
+    if (!parseResult.success) {
+      return res
+        .status(400)
+        .json({ error: parseResult.error.flatten().fieldErrors });
+    }
+
+    const { q } = parseResult.data;
+
+    // Create a safe case-insensitive regex (beginning match)
+    const regex = new RegExp(`^${q}`, "i");
+
+    // Perform search
+    const users = await User.find({
+      $or: [
+        { userId: regex },
+        { employeeId: regex },
+        { phoneNumber: regex },
+        { walletAddress: regex },
+      ],
+    })
+      .select(
+        "firstName lastName role userId employeeId phoneNumber walletAddress"
+      )
+      .limit(10)
+      .lean(); // Faster read
+
+    const results = users.map((user) => ({
+      _id: user._id,
+      role: user.role,
+      userId: user.userId || null,
+      employeeId: user.employeeId || null,
+      phoneNumber: user.phoneNumber,
+      walletAddress: user.walletAddress,
+      fullName: `${user.firstName} ${user.lastName}`,
+    }));
+
+    return res.status(200).json(results);
+  } catch (err) {
+    console.error("User search failed:", err);
+    return res
+      .status(500)
+      .json({ error: "Server error while searching users" });
+  }
+});
+/*
+Testing : GET api/v1/user/search?q=John
+*/
+
+// GET /api/v1/user/:caseId/:docId/search
+router.get("/:caseId/:docId/search", authMiddleware, async (req, res) => {
+  try {
+    const { caseId, docId } = req.params;
+    const { query } = req.query;
+    const requesterWallet = req.userWalletAddress.toLowerCase();
+    
+    if (!query || query.trim().length < 3) { 
+      return res
+        .status(400)
+        .json({ message: "Query must be at least 3 characters long." });
+    }
+
+    const caseDoc = await CaseDocument.findById(docId);
+    if (!caseDoc || caseDoc.caseId.toString() !== caseId) {
+      return res.status(404).json({ message: "Case document not found" });
+    }
+
+    const foundCase = await Case.findById(caseId);
+    if (!foundCase) {
+      return res.status(404).json({ message: "Case not found" });
+    }
+
+    const isUploader = caseDoc.uploadedBy.toLowerCase() === requesterWallet;
+    const isAdmin = foundCase.admin.toLowerCase() === requesterWallet;
+
+    if (!isUploader && !isAdmin) {
+      return res.status(403).json({
+        message:
+          "Only the uploader or case admin can search participants to grant access.",
+      });
+    }
+
+    // Extract all participant wallets
+    const participantWallets = foundCase.participants.map((p) =>
+      p.wallet.toLowerCase()
+    );
+
+    // Build search condition
+    const searchRegex = new RegExp(query.trim(), "i");
+    const searchConditions = {
+      $or: [
+        { phoneNumber: searchRegex },
+        { walletAddress: searchRegex },
+        { userId: searchRegex },
+        { employeeId: searchRegex },
+      ],
+      walletAddress: { $in: participantWallets },
+    };
+
+    const matchedUsers = await User.find(searchConditions).select(
+      "firstName lastName phoneNumber userId employeeId walletAddress role"
+    );
+
+    const results = matchedUsers.map((user) => ({
+      name: `${user.firstName} ${user.lastName}`,
+      wallet: user.walletAddress,
+      role: user.role,
+      phoneNumber: user.phoneNumber,
+      userId: user.userId || user.employeeId || "",
+    }));
+
+    return res.json(results);
+  } catch (err) {
+    console.error("Error fetching case document:", err);
+    res.status(500).json({ message: "Server error fetching document." });
+  }
+});
 
 module.exports = router;

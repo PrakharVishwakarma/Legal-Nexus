@@ -63,6 +63,38 @@
       "type": "event"
     },
     {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "bytes32",
+          "name": "caseId",
+          "type": "bytes32"
+        }
+      ],
+      "name": "CaseClosed",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "bytes32",
+          "name": "caseId",
+          "type": "bytes32"
+        },
+        {
+          "indexed": true,
+          "internalType": "address",
+          "name": "admin",
+          "type": "address"
+        }
+      ],
+      "name": "CaseRegistered",
+      "type": "event"
+    },
+    {
       "inputs": [
         {
           "internalType": "bytes32",
@@ -95,12 +127,17 @@
           "type": "bytes32"
         }
       ],
-      "name": "caseAdmins",
+      "name": "cases",
       "outputs": [
         {
           "internalType": "address",
-          "name": "",
+          "name": "admin",
           "type": "address"
+        },
+        {
+          "internalType": "bool",
+          "name": "isClosed",
+          "type": "bool"
         }
       ],
       "stateMutability": "view",
@@ -120,6 +157,24 @@
       "stateMutability": "view",
       "type": "function",
       "constant": true
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "bytes32",
+          "name": "caseId",
+          "type": "bytes32"
+        },
+        {
+          "internalType": "address",
+          "name": "admin",
+          "type": "address"
+        }
+      ],
+      "name": "registerCase",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
     },
     {
       "inputs": [
@@ -196,6 +251,19 @@
         }
       ],
       "name": "transferCaseOwnership",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "bytes32",
+          "name": "caseId",
+          "type": "bytes32"
+        }
+      ],
+      "name": "closeCase",
       "outputs": [],
       "stateMutability": "nonpayable",
       "type": "function"
