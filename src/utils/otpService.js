@@ -14,15 +14,12 @@ if (!accountSid || !authToken || !fromNumber) {
  
 const client = twilio(accountSid, authToken);
 
-// OTP generation function with adjustable length
 const generateOTP = (length = 6) => {
     return Array.from({ length }, () => Math.floor(Math.random() * 10)).join('');
 };
 
-// Send OTP via Twilio SMS service
 async function sendOTP(phone, otp) {
     try {
-        // Validate phone number format (basic validation)
         if (!/^\+?[1-9]\d{1,14}$/.test(phone)) {
             throw new Error("Invalid phone number format");
         }
@@ -33,10 +30,10 @@ async function sendOTP(phone, otp) {
             to: phone,
         });
         console.log(`OTP sent to ${phone}: ${message.sid}`);
-        return true; // Indicate success
+        return true; 
     } catch (error) {
         console.error("Error sending OTP:", error);
-        return false; // Indicate failure
+        return false; 
     }
 }
 

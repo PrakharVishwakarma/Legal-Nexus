@@ -168,7 +168,7 @@ router.patch(
   async (req, res) => {
     try {
       const { caseId, docId } = req.params;
-      const normalizedUserWallet = req.userWalletAddress.toLowerCase();
+      const normalizedUserWallet = req.userWalletAddress;
 
       const parsed = grantAccessSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -178,7 +178,7 @@ router.patch(
       }
 
       const { targetWallet, permissions } = parsed.data;
-      const normalizedTargetWallet = targetWallet.toLowerCase();
+      const normalizedTargetWallet = targetWallet;
       const { canView = false, canDelete = false } = permissions;
 
       if (normalizedUserWallet === normalizedTargetWallet) {
@@ -200,15 +200,15 @@ router.patch(
         return res.status(404).json({ message: "Document not found." });
       }
 
-      if (normalizedTargetWallet === caseData.admin.toLowerCase()) {
+      if (normalizedTargetWallet === caseData.admin) {
         return res
           .status(400)
           .json({ message: "Cannot grant access to case admin." });
       }
 
       // Only uploader or admin can grant access
-      const isUploader = doc.uploadedBy.toLowerCase() === normalizedUserWallet;
-      const isAdmin = caseData.admin.toLowerCase() === normalizedUserWallet;
+      const isUploader = doc.uploadedBy === normalizedUserWallet;
+      const isAdmin = caseData.admin === normalizedUserWallet;
       if (!isUploader && !isAdmin) {
         return res.status(403).json({
           message: "Only uploader or case admin can grant access.",
@@ -217,7 +217,7 @@ router.patch(
 
       // Ensure target is a case participant
       const isParticipant = caseData.participants.some(
-        (p) => p.wallet.toLowerCase() === normalizedTargetWallet
+        (p) => p.wallet=== normalizedTargetWallet
       );
       if (!isParticipant) {
         return res.status(403).json({
@@ -227,7 +227,7 @@ router.patch(
 
       // Check if already exists with same permissions
       const idx = doc.accessControl.findIndex(
-        (entry) => entry.wallet.toLowerCase() === normalizedTargetWallet
+        (entry) => entry.wallet === normalizedTargetWallet
       );
       if (
         idx !== -1 &&
@@ -443,8 +443,8 @@ router.patch(
 
       const { targetWallet } = parsed.data;
 
-      const requesterWallet = req.userWalletAddress.toLowerCase();
-      const normalizedTarget = targetWallet.toLowerCase();
+      const requesterWallet = req.userWalletAddress;
+      const normalizedTarget = targetWallet;
 
       // Using promise.all
       const [parentCase, doc] = await Promise.all([
@@ -460,8 +460,8 @@ router.patch(
         return res.status(404).json({ message: "Document not found." });
       }
 
-      const caseAdmin = parentCase.admin.toLowerCase();
-      const uploaderWallet = doc.uploadedBy.toLowerCase();
+      const caseAdmin = parentCase.admin;
+      const uploaderWallet = doc.uploadedBy;
 
       if (normalizedTarget === requesterWallet) {
         return res.status(403).json({
@@ -485,7 +485,7 @@ router.patch(
 
       // Check if target is in accessControl[]
       const index = doc.accessControl.findIndex(
-        (entry) => entry.wallet.toLowerCase() === normalizedTarget
+        (entry) => entry.wallet === normalizedTarget
       );
 
       if (index === -1) {
@@ -622,7 +622,7 @@ const querySchema = z.object({
 router.get("/:caseId", authMiddleware, async (req, res) => {
   try {
     const { caseId } = req.params;
-    const wallet = req.userWalletAddress.toLowerCase();
+    const wallet = req.userWalletAddress;
 
     const parsedQuery = querySchema.safeParse(req.query);
     if (!parsedQuery.success) {
@@ -646,9 +646,9 @@ router.get("/:caseId", authMiddleware, async (req, res) => {
       });
     }
 
-    const isAdmin = caseDoc.admin.toLowerCase() === wallet;
+    const isAdmin = caseDoc.admin === wallet;
     const participant = caseDoc.participants.find(
-      (p) => p.wallet.toLowerCase() === wallet
+      (p) => p.wallet === wallet
     );
 
     if (!isAdmin && !participant) {
@@ -774,7 +774,7 @@ router.get("/:caseId", authMiddleware, async (req, res) => {
 router.get("/:caseId/view/:docId", authMiddleware, async (req, res) => {
   try {
     const { caseId, docId } = req.params;
-    const wallet = req.userWalletAddress.toLowerCase();
+    const wallet = req.userWalletAddress;
 
     // Fetch case and document in parallel
     const [caseDoc, document] = await Promise.all([
@@ -790,12 +790,12 @@ router.get("/:caseId/view/:docId", authMiddleware, async (req, res) => {
       return res.status(404).json({ message: "Document not found" });
     }
 
-    const isUserCaseAdmin = caseDoc.admin.toLowerCase() === wallet;
-    const isUserDocCreator = document.uploadedBy.toLowerCase() === wallet;
+    const isUserCaseAdmin = caseDoc.admin === wallet;
+    const isUserDocCreator = document.uploadedBy === wallet;
 
     // Access control check
     const docAccess = document.accessControl.find(
-      (entry) => entry.wallet.toLowerCase() === wallet
+      (entry) => entry.wallet === wallet
     );
 
     const hasUserViewAccess = docAccess?.canView || false;
@@ -901,7 +901,7 @@ router.get("/:caseId/:docId/participants", authMiddleware, async (req, res) => {
 router.delete("/:docId", authMiddleware, async (req, res) => {
   try {
     const { docId } = req.params;
-    const wallet = req.userWalletAddress.toLowerCase();
+    const wallet = req.userWalletAddress;
 
     // Validate document existence
     const document = await CaseDocument.findOne({
@@ -919,10 +919,10 @@ router.delete("/:docId", authMiddleware, async (req, res) => {
     }
 
     // Check access permissions
-    const isAdmin = caseData.admin.toLowerCase() === wallet;
-    const isUploader = document.uploadedBy.toLowerCase() === wallet;
+    const isAdmin = caseData.admin === wallet;
+    const isUploader = document.uploadedBy === wallet;
     const hasAccess = document.accessControl.some(
-      (access) => access.wallet.toLowerCase() === wallet && access.canDelete
+      (access) => access.wallet === wallet && access.canDelete
     );
 
     if (!isAdmin && !isUploader && !hasAccess) {
@@ -959,7 +959,7 @@ router.delete("/:docId", authMiddleware, async (req, res) => {
 router.get("/:docId/logs", authMiddleware, async (req, res) => {
   try {
     const { docId } = req.params;
-    const wallet = req.userWalletAddress.toLowerCase();
+    const wallet = req.userWalletAddress;
 
     // Validate document existence
     const document = await CaseDocument.findOne({
@@ -972,7 +972,7 @@ router.get("/:docId/logs", authMiddleware, async (req, res) => {
 
     // Check if the user has access to the document
     const hasAccess = document.accessControl.some(
-      (access) => access.wallet.toLowerCase() === wallet && access.canView
+      (access) => access.wallet === wallet && access.canView
     );
 
     if (!hasAccess) {

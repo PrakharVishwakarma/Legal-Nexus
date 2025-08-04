@@ -12,6 +12,8 @@ const Case = require("../../Models/caseModel");
 
 const { User } = require("../../Models/userModel");
 
+const CaseDocument = require("../../Models/caseDocumentModel");
+
 const {
   grantAccess,
   revokeAccess,
@@ -126,35 +128,33 @@ const grantAccessSchema = z.object({
 router.patch("/:id/grant-access", authMiddleware, async (req, res) => {
   try {
     const caseId = req.params.id;
-    
+
     const parsed = grantAccessSchema.safeParse(req.body);
     if (!parsed.success) {
       return res
-      .status(400)
-      .json({ message: "Invalid input", errors: parsed.error.errors });
+        .status(400)
+        .json({ message: "Invalid input", errors: parsed.error.errors });
     }
-    
+
     const { wallet, role, permissions } = parsed.data;
 
-    console.log("Got request with data: ", parsed.data);
-    
     const caseDoc = await Case.findById(caseId);
     if (!caseDoc) {
       return res.status(404).json({ message: "Case not found" });
     }
 
-    if (caseDoc.admin.toLowerCase() !== req.userWalletAddress.toLowerCase()) {
+    if (caseDoc.admin !== req.userWalletAddress) {
       return res
         .status(403)
         .json({ message: "Only the case admin can grant access" });
     }
 
-    if (wallet.toLowerCase() === caseDoc.admin.toLowerCase()) {
+    if (wallet === caseDoc.admin) {
       return res.status(400).json({ message: "Admin already owns the case" });
     }
 
     const isDuplicate = caseDoc.participants.some(
-      (p) => p.wallet.toLowerCase() === wallet.toLowerCase()
+      (p) => p.wallet === wallet
     );
 
     if (isDuplicate) {
@@ -166,9 +166,9 @@ router.patch("/:id/grant-access", authMiddleware, async (req, res) => {
     const caseIdStr = caseDoc._id.toString();
 
     const txHash = await grantAccess(caseIdStr, wallet);
-    
+
     caseDoc.participants.push({
-      wallet: wallet.toLowerCase(),
+      wallet: wallet,
       role,
       permissions,
       addedAt: new Date(),
@@ -222,42 +222,44 @@ router.delete(
   "/:caseId/revoke-access/:wallet",
   authMiddleware,
   async (req, res) => {
-    const revokeAccessSchema = z.object({
-      caseId: z.string(),
-      wallet: z.string().regex(/^0x[a-fA-F0-9]{40}$/, "Invalid wallet address"),
-    });
-
-    const parsed = revokeAccessSchema.safeParse(req.params);
-    if (!parsed.success) {
-      return res.status(400).json({
-        message: "Invalid input",
-        errors: parsed.error.errors,
-      });
-    }
-
     try {
+      const revokeAccessSchema = z.object({
+        caseId: z.string(),
+        wallet: z
+          .string()
+          .regex(/^0x[a-fA-F0-9]{40}$/, "Invalid wallet address"),
+      });
+
+      const parsed = revokeAccessSchema.safeParse(req.params);
+      if (!parsed.success) {
+        return res.status(400).json({
+          message: "Invalid input",
+          errors: parsed.error.errors,
+        });
+      }
+
       const { caseId, wallet } = parsed.data;
-      const normalizedWallet = wallet.toLowerCase();
+      const normalizedWallet = wallet;
 
       const caseDoc = await Case.findById(caseId);
       if (!caseDoc) {
         return res.status(404).json({ message: "Case not found" });
       }
 
-      if (caseDoc.admin.toLowerCase() !== req.userWalletAddress.toLowerCase()) {
+      if (caseDoc.admin !== req.userWalletAddress) {
         return res
           .status(403)
           .json({ message: "Only the admin can revoke access" });
       }
 
-      if (normalizedWallet === caseDoc.admin.toLowerCase()) {
+      if (normalizedWallet === caseDoc.admin) {
         return res
           .status(400)
           .json({ message: "Cannot revoke access from the case admin" });
       }
 
       const existingParticipant = caseDoc.participants.find(
-        (p) => p.wallet.toLowerCase() === normalizedWallet
+        (p) => p.wallet === normalizedWallet
       );
       if (!existingParticipant) {
         return res
@@ -266,7 +268,7 @@ router.delete(
       }
 
       caseDoc.participants = caseDoc.participants.filter(
-        (p) => p.wallet.toLowerCase() !== normalizedWallet
+        (p) => p.wallet !== normalizedWallet
       );
 
       await caseDoc.save();
@@ -286,44 +288,48 @@ router.delete(
 );
 
 const changeAdminSchema = z.object({
-  caseId: z.string().min(1), // UUID validation if you're using UUIDs
   newAdminWallet: z.string().startsWith("0x").length(42),
+  roleOfNewAdmin: z.enum(["Lawyer", "Police", "Judge"]),
 });
 
-router.patch("/change-admin", authMiddleware, async (req, res) => {
+router.patch("/:caseId/migrate-admin", authMiddleware, async (req, res) => {
   const parsed = changeAdminSchema.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({
-      message: "Invalid input",
-      errors: parsed.error.errors,
-    });
-  }
-
-  const { caseId, newAdminWallet } = parsed.data;
-  const userWallet = req.userWalletAddress.toLowerCase();
-  const newAdminLower = newAdminWallet.toLowerCase();
-
   try {
+    if (!parsed.success) {
+      return res.status(400).json({
+        message: "Invalid input",
+        errors: parsed.error.errors,
+      });
+    }
+
+    const { newAdminWallet, roleOfNewAdmin } = parsed.data;
+    const caseId = req.params.caseId;
+    const userWallet = req.userWalletAddress;
+
+    if( !["Lawyer", "Police", "Judge"].includes(roleOfNewAdmin)) {
+      return res.status(403).json({ error: "Owner ship of the case can only be transferred to a Lawyer, Police or Judge" });
+    }
+
     const caseDoc = await Case.findById(caseId);
     if (!caseDoc) {
       return res.status(404).json({ error: "Case not found" });
     }
 
     // Only current admin can transfer ownership
-    if (caseDoc.admin.toLowerCase() !== userWallet) {
+    if (caseDoc.admin !== userWallet) {
       return res
         .status(403)
         .json({ error: "Only current admin can transfer ownership" });
     }
 
     // No-op if same admin
-    if (userWallet === newAdminLower) {
+    if (userWallet === newAdminWallet) {
       return res.status(400).json({ error: "You are already the admin" });
     }
 
     // Ensure new admin is a participant
     const newAdminParticipant = caseDoc.participants.find(
-      (p) => p.wallet.toLowerCase() === newAdminLower
+      (p) => p.wallet === newAdminWallet
     );
     if (!newAdminParticipant) {
       return res
@@ -336,7 +342,7 @@ router.patch("/change-admin", authMiddleware, async (req, res) => {
     const txHash = await transferCaseOwnership(caseIdStr, newAdminWallet);
 
     // Update admin in the document
-    caseDoc.admin = newAdminLower;
+    caseDoc.admin = newAdminWallet;
 
     // Add to admin change history
     caseDoc.adminHistory.push({
@@ -346,10 +352,10 @@ router.patch("/change-admin", authMiddleware, async (req, res) => {
 
     // Update participant permissions (demote old admin, promote new)
     caseDoc.participants = caseDoc.participants.map((p) => {
-      const pWallet = p.wallet.toLowerCase();
+      const pWallet = p.wallet;
       if (pWallet === userWallet) {
         p.permissions = { canView: true, canUpload: false };
-      } else if (pWallet === newAdminLower) {
+      } else if (pWallet === newAdminWallet) {
         p.permissions = { canView: true, canUpload: true };
       }
       return p;
@@ -372,7 +378,7 @@ router.patch("/change-admin", authMiddleware, async (req, res) => {
 
     // 2. Upgrade existing new admin if already in accessControl
     const upgradeNewAdmin = CaseDocument.updateMany(
-      { caseId, "accessControl.wallet": newAdminLower },
+      { caseId, "accessControl.wallet": newAdminWallet },
       {
         $set: {
           "accessControl.$.canView": true,
@@ -385,12 +391,12 @@ router.patch("/change-admin", authMiddleware, async (req, res) => {
     const pushNewAdminIfNotExists = CaseDocument.updateMany(
       {
         caseId,
-        accessControl: { $not: { $elemMatch: { wallet: newAdminLower } } },
+        accessControl: { $not: { $elemMatch: { wallet: newAdminWallet } } },
       },
       {
         $push: {
           accessControl: {
-            wallet: newAdminLower,
+            wallet: newAdminWallet,
             canView: true,
             canDelete: true,
           },
@@ -486,7 +492,7 @@ const querySchema = z.object({
 // ✅ GET /api/v1/cases/get-cases
 router.get("/get-cases", authMiddleware, async (req, res) => {
   try {
-    const userWallet = req.userWalletAddress.toLowerCase();
+    const userWallet = req.userWalletAddress;
 
     // ✅ Validate and parse query params
     const result = querySchema.safeParse(req.query);
@@ -576,7 +582,7 @@ router.get("/get-cases", authMiddleware, async (req, res) => {
 router.get("/:caseId", authMiddleware, async (req, res) => {
   try {
     const { caseId } = req.params;
-    const wallet = req.userWalletAddress.toLowerCase();
+    const wallet = req.userWalletAddress;
 
     // ✅ Fetch the case
     const caseDoc = await Case.findById(caseId).lean();
@@ -585,7 +591,7 @@ router.get("/:caseId", authMiddleware, async (req, res) => {
     }
 
     // ✅ Check if user is the case admin
-    const isUserCaseAdmin = caseDoc.admin.toLowerCase() === wallet;
+    const isUserCaseAdmin = caseDoc.admin === wallet;
 
     // ✅ Initialize permission flags
     let hasUserViewAccess = false;
@@ -594,7 +600,7 @@ router.get("/:caseId", authMiddleware, async (req, res) => {
     // ✅ Only evaluate participant permissions if not admin
     if (!isUserCaseAdmin) {
       const participant = caseDoc.participants.find(
-        (p) => p.wallet.toLowerCase() === wallet
+        (p) => p.wallet === wallet
       );
 
       if (participant?.permissions?.canView) {
@@ -640,7 +646,7 @@ router.get("/:caseId", authMiddleware, async (req, res) => {
 router.patch("/:caseId/close", authMiddleware, async (req, res) => {
   try {
     const { caseId } = req.params;
-    const wallet = req.userWalletAddress.toLowerCase();
+    const wallet = req.userWalletAddress;
 
     const caseDoc = await Case.findOne({ _id: caseId });
 
@@ -648,7 +654,7 @@ router.patch("/:caseId/close", authMiddleware, async (req, res) => {
       return res.status(404).json({ message: "Case not found" });
     }
 
-    if (caseDoc.admin.toLowerCase() !== wallet) {
+    if (caseDoc.admin !== wallet) {
       return res
         .status(403)
         .json({ message: "Only the case admin can close this case" });
@@ -706,7 +712,7 @@ router.patch("/cases/:caseId/metadata", authMiddleware, async (req, res) => {
       return res.status(404).json({ error: "Case not found" });
     }
 
-    if (caseDoc.admin.toLowerCase() !== wallet.toLowerCase()) {
+    if (caseDoc.admin !== wallet) {
       return res
         .status(403)
         .json({ error: "Only the case admin can update metadata" });

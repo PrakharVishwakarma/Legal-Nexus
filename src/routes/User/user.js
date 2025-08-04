@@ -502,7 +502,7 @@ router.patch("/update-wallet", async (req, res) => {
 
     // Check if wallet is already used by someone else
     const existing = await User.findOne({
-      walletAddress: walletAddress.toLowerCase(),
+      walletAddress: walletAddress,
       _id: { $ne: userMongoId },
     });
 
@@ -515,7 +515,7 @@ router.patch("/update-wallet", async (req, res) => {
     // Save wallet address in lowercase format
     const user = await User.findByIdAndUpdate(
       userMongoId,
-      { walletAddress: walletAddress.toLowerCase() },
+      { walletAddress: walletAddress },
       { new: true, runValidators: true }
     );
 
@@ -698,26 +698,33 @@ router.get("/:caseId/:docId/search", authMiddleware, async (req, res) => {
   try {
     const { caseId, docId } = req.params;
     const { query } = req.query;
-    const requesterWallet = req.userWalletAddress.toLowerCase();
-    
-    if (!query || query.trim().length < 3) { 
+    const requesterWallet = req.userWalletAddress;
+
+    if (!query || query.trim().length < 3) {
       return res
         .status(400)
         .json({ message: "Query must be at least 3 characters long." });
     }
 
-    const caseDoc = await CaseDocument.findById(docId);
-    if (!caseDoc || caseDoc.caseId.toString() !== caseId) {
+    // finding caseDoc and foundCase Using promise.all
+    const [foundCase, caseDoc] = await Promise.all([
+      Case.findById(caseId),
+      CaseDocument.findById(docId),
+    ]);
+
+    if (!caseDoc) {
       return res.status(404).json({ message: "Case document not found" });
     }
 
-    const foundCase = await Case.findById(caseId);
     if (!foundCase) {
       return res.status(404).json({ message: "Case not found" });
     }
 
-    const isUploader = caseDoc.uploadedBy.toLowerCase() === requesterWallet;
-    const isAdmin = foundCase.admin.toLowerCase() === requesterWallet;
+    const isUploader = caseDoc.uploadedBy === requesterWallet;
+    const isAdmin = foundCase.admin === requesterWallet;
+    console.log("Case Doc ",caseDoc.uploadedBy,"\n Case ",foundCase.admin);
+    console.log("\nRequester Wallet ",requesterWallet);
+    console.log("Is the user is admin ",isAdmin,"\n is the user is uploader ",isUploader);
 
     if (!isUploader && !isAdmin) {
       return res.status(403).json({
@@ -728,7 +735,7 @@ router.get("/:caseId/:docId/search", authMiddleware, async (req, res) => {
 
     // Extract all participant wallets
     const participantWallets = foundCase.participants.map((p) =>
-      p.wallet.toLowerCase()
+      p.wallet
     );
 
     // Build search condition
@@ -759,6 +766,60 @@ router.get("/:caseId/:docId/search", authMiddleware, async (req, res) => {
   } catch (err) {
     console.error("Error fetching case document:", err);
     res.status(500).json({ message: "Server error fetching document." });
+  }
+});
+
+// GET /api/v1/user/:caseId/search
+router.get("/:caseId/search", authMiddleware, async (req, res) => {
+  try {
+    const { caseId } = req.params;
+    const { query } = req.query;
+    const requesterWallet = req.userWalletAddress;
+
+    if (!query || query.trim().length < 3) {
+      return res
+        .status(400)
+        .json({ message: "Query must be at least 3 characters long." });
+    }
+
+    const foundCase = await Case.findById(caseId);
+    if (!foundCase) {
+      return res.status(404).json({ message: "Case not found." });
+    }
+
+    const isAdmin = foundCase.admin === requesterWallet;
+    if (!isAdmin) {
+      return res.status(403).json({
+        message:
+          "Only the case admin can search participants to transfer ownership.",
+      });
+    }
+
+    // Normalize and extract participant wallet addresses (excluding current admin)
+    const participantWallets = foundCase.participants
+      .map((p) => p.wallet)
+      .filter((wallet) => wallet && wallet !== requesterWallet);
+
+    if (participantWallets.length === 0) {
+      return res.status(200).json({ users: [] }); // No eligible participants
+    }
+
+    // Search in User model for participants matching the query
+    const users = await User.find({
+      walletAddress: { $in: participantWallets },
+      $or: [
+        { employeeId: { $regex: query, $options: "i" } },
+        { phoneNumber: { $regex: query, $options: "i" } },
+        { walletAddress: { $regex: query, $options: "i" } },
+      ],
+    }).select("employeeId phoneNumber walletAddress role firstName lastName");
+
+    return res.status(200).json({ users });
+  } catch (err) {
+    console.error("Error searching participants for admin transfer:", err);
+    return res
+      .status(500)
+      .json({ message: "Server error during participant search." });
   }
 });
 
