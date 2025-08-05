@@ -687,12 +687,12 @@ const updateMetadataSchema = z.object({
   description: z.string().min(10).max(1000).optional(),
   courtName: z.string().min(3).max(100).optional(),
 });
-router.patch("/cases/:caseId/metadata", authMiddleware, async (req, res) => {
+router.patch("/:caseId/metadata", authMiddleware, async (req, res) => {
   try {
     const { caseId } = req.params;
-    const wallet = req.user?.wallet; // from auth middleware
+    const wallet = req.userWalletAddress; // from auth middleware
 
-    if (!caseId || !wallet) {
+    if (!caseId && !wallet) {
       return res
         .status(400)
         .json({ error: "Missing caseId or user authentication" });
